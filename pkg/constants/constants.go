@@ -33,6 +33,9 @@ const (
 
 	Author = "kaniko"
 
+	// DockerfilePath is the path the Dockerfile is copied to
+	DockerfilePath = "/kaniko/Dockerfile"
+
 	// ContextTar is the default name of the tar uploaded to GCS buckets
 	ContextTar = "context.tar.gz"
 
@@ -40,13 +43,40 @@ const (
 	// for example, a tarball from a GCS bucket will be unpacked here
 	BuildContextDir = "/kaniko/buildcontext/"
 
+	// KanikoIntermediateStagesDir is where we will store intermediate stages
+	// as tarballs in case they are needed later on
+	KanikoIntermediateStagesDir = "/kaniko/stages"
+
 	// Various snapshot modes:
 	SnapshotModeTime = "time"
 	SnapshotModeFull = "full"
 
 	// NoBaseImage is the scratch image
 	NoBaseImage = "scratch"
+
+	GCSBuildContextPrefix      = "gs://"
+	S3BuildContextPrefix       = "s3://"
+	LocalDirBuildContextPrefix = "dir://"
+
+	HOME = "HOME"
+	// DefaultHOMEValue is the default value Docker sets for $HOME
+	DefaultHOMEValue = "/root"
+	RootUser         = "root"
+
+	// Docker command names
+	Cmd        = "cmd"
+	Entrypoint = "entrypoint"
+
+	// Name of the .dockerignore file
+	Dockerignore = ".dockerignore"
 )
 
 // KanikoBuildFiles is the list of files required to build kaniko
-var KanikoBuildFiles = []string{"/kaniko/executor", "/kaniko/ssl/certs/ca-certificates.crt"}
+var KanikoBuildFiles = []string{"/kaniko/executor",
+	"/kaniko/ssl/certs/ca-certificates.crt",
+	"/kaniko/docker-credential-gcr",
+	"/kaniko/docker-credential-ecr-login",
+	"/kaniko/.docker/config.json"}
+
+// ScratchEnvVars are the default environment variables needed for a scratch image.
+var ScratchEnvVars = []string{"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}

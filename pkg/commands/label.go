@@ -17,35 +17,41 @@ limitations under the License.
 package commands
 
 import (
-	"github.com/GoogleCloudPlatform/kaniko/pkg/util"
-	"github.com/containers/image/manifest"
-	"github.com/docker/docker/builder/dockerfile/instructions"
+	"github.com/GoogleContainerTools/kaniko/pkg/dockerfile"
+
+	"github.com/GoogleContainerTools/kaniko/pkg/util"
+	"github.com/google/go-containerregistry/pkg/v1"
+	"github.com/moby/buildkit/frontend/dockerfile/instructions"
 	"github.com/sirupsen/logrus"
-	"strings"
 )
 
 type LabelCommand struct {
+	BaseCommand
 	cmd *instructions.LabelCommand
 }
 
-func (r *LabelCommand) ExecuteCommand(config *manifest.Schema2Config) error {
-	logrus.Info("cmd: LABEL")
-	return updateLabels(r.cmd.Labels, config)
+func (r *LabelCommand) ExecuteCommand(config *v1.Config, buildArgs *dockerfile.BuildArgs) error {
+	return updateLabels(r.cmd.Labels, config, buildArgs)
 }
 
-func updateLabels(labels []instructions.KeyValuePair, config *manifest.Schema2Config) error {
+func updateLabels(labels []instructions.KeyValuePair, config *v1.Config, buildArgs *dockerfile.BuildArgs) error {
 	existingLabels := config.Labels
 	if existingLabels == nil {
 		existingLabels = make(map[string]string)
 	}
 	// Let's unescape values before setting the label
+	replacementEnvs := buildArgs.ReplacementEnvs(config.Env)
 	for index, kvp := range labels {
-		unescaped, err := util.ResolveEnvironmentReplacement(kvp.Value, []string{}, false)
+		key, err := util.ResolveEnvironmentReplacement(kvp.Key, replacementEnvs, false)
+		if err != nil {
+			return err
+		}
+		unescaped, err := util.ResolveEnvironmentReplacement(kvp.Value, replacementEnvs, false)
 		if err != nil {
 			return err
 		}
 		labels[index] = instructions.KeyValuePair{
-			Key:   kvp.Key,
+			Key:   key,
 			Value: unescaped,
 		}
 	}
@@ -59,16 +65,7 @@ func updateLabels(labels []instructions.KeyValuePair, config *manifest.Schema2Co
 
 }
 
-// No files have changed, this command only touches metadata.
-func (r *LabelCommand) FilesToSnapshot() []string {
-	return []string{}
-}
-
-// CreatedBy returns some information about the command for the image config history
-func (r *LabelCommand) CreatedBy() string {
-	l := []string{r.cmd.Name()}
-	for _, kvp := range r.cmd.Labels {
-		l = append(l, kvp.String())
-	}
-	return strings.Join(l, " ")
+// String returns some information about the command for the image config history
+func (r *LabelCommand) String() string {
+	return r.cmd.String()
 }

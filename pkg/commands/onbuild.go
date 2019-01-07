@@ -17,38 +17,30 @@ limitations under the License.
 package commands
 
 import (
-	"github.com/GoogleCloudPlatform/kaniko/pkg/util"
-	"github.com/containers/image/manifest"
-	"github.com/docker/docker/builder/dockerfile/instructions"
+	"github.com/GoogleContainerTools/kaniko/pkg/dockerfile"
+	"github.com/google/go-containerregistry/pkg/v1"
+	"github.com/moby/buildkit/frontend/dockerfile/instructions"
 	"github.com/sirupsen/logrus"
 )
 
 type OnBuildCommand struct {
+	BaseCommand
 	cmd *instructions.OnbuildCommand
 }
 
 //ExecuteCommand adds the specified expression in Onbuild to the config
-func (o *OnBuildCommand) ExecuteCommand(config *manifest.Schema2Config) error {
+func (o *OnBuildCommand) ExecuteCommand(config *v1.Config, buildArgs *dockerfile.BuildArgs) error {
 	logrus.Info("cmd: ONBUILD")
 	logrus.Infof("args: %s", o.cmd.Expression)
-	resolvedExpression, err := util.ResolveEnvironmentReplacement(o.cmd.Expression, config.Env, false)
-	if err != nil {
-		return err
-	}
 	if config.OnBuild == nil {
-		config.OnBuild = []string{resolvedExpression}
+		config.OnBuild = []string{o.cmd.Expression}
 	} else {
-		config.OnBuild = append(config.OnBuild, resolvedExpression)
+		config.OnBuild = append(config.OnBuild, o.cmd.Expression)
 	}
 	return nil
 }
 
-// FilesToSnapshot returns that no files have changed, this command only touches metadata.
-func (o *OnBuildCommand) FilesToSnapshot() []string {
-	return []string{}
-}
-
-// CreatedBy returns some information about the command for the image config history
-func (o *OnBuildCommand) CreatedBy() string {
-	return o.cmd.Expression
+// String returns some information about the command for the image config history
+func (o *OnBuildCommand) String() string {
+	return o.cmd.String()
 }

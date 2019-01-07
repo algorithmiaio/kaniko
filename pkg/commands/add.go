@@ -17,15 +17,20 @@ limitations under the License.
 package commands
 
 import (
-	"github.com/GoogleCloudPlatform/kaniko/pkg/util"
-	"github.com/containers/image/manifest"
-	"github.com/docker/docker/builder/dockerfile/instructions"
-	"github.com/sirupsen/logrus"
 	"path/filepath"
-	"strings"
+
+	"github.com/moby/buildkit/frontend/dockerfile/instructions"
+
+	"github.com/GoogleContainerTools/kaniko/pkg/dockerfile"
+
+	"github.com/google/go-containerregistry/pkg/v1"
+
+	"github.com/GoogleContainerTools/kaniko/pkg/util"
+	"github.com/sirupsen/logrus"
 )
 
 type AddCommand struct {
+	BaseCommand
 	cmd           *instructions.AddCommand
 	buildcontext  string
 	snapshotFiles []string
@@ -39,94 +44,58 @@ type AddCommand struct {
 // 		- If dest doesn't end with a slash, the filepath is inferred to be <dest>/<filename>
 // 	2. If <src> is a local tar archive:
 // 		-If <src> is a local tar archive, it is unpacked at the dest, as 'tar -x' would
-func (a *AddCommand) ExecuteCommand(config *manifest.Schema2Config) error {
-	srcs := a.cmd.SourcesAndDest[:len(a.cmd.SourcesAndDest)-1]
-	dest := a.cmd.SourcesAndDest[len(a.cmd.SourcesAndDest)-1]
+func (a *AddCommand) ExecuteCommand(config *v1.Config, buildArgs *dockerfile.BuildArgs) error {
+	replacementEnvs := buildArgs.ReplacementEnvs(config.Env)
 
-	logrus.Infof("cmd: Add %s", srcs)
-	logrus.Infof("dest: %s", dest)
-
-	// First, resolve any environment replacement
-	resolvedEnvs, err := util.ResolveEnvironmentReplacementList(a.cmd.SourcesAndDest, config.Env, true)
+	srcs, dest, err := resolveEnvAndWildcards(a.cmd.SourcesAndDest, a.buildcontext, replacementEnvs)
 	if err != nil {
 		return err
 	}
-	dest = resolvedEnvs[len(resolvedEnvs)-1]
-	// Get a map of [src]:[files rooted at src]
-	srcMap, err := util.ResolveSources(resolvedEnvs, a.buildcontext)
-	if err != nil {
-		return err
-	}
+
+	var unresolvedSrcs []string
 	// If any of the sources are local tar archives:
 	// 	1. Unpack them to the specified destination
-	// 	2. Remove it as a source that needs to be copied over
 	// If any of the sources is a remote file URL:
 	//	1. Download and copy it to the specified dest
-	//  2. Remove it as a source that needs to be copied
-	for src, files := range srcMap {
-		for _, file := range files {
-			// If file is a local tar archive, then we unpack it to dest
-			filePath := filepath.Join(a.buildcontext, file)
-			isFilenameSource, err := isFilenameSource(srcMap, file)
+	// Else, add to the list of unresolved sources
+	for _, src := range srcs {
+		fullPath := filepath.Join(a.buildcontext, src)
+		if util.IsSrcRemoteFileURL(src) {
+			urlDest := util.URLDestinationFilepath(src, dest, config.WorkingDir)
+			logrus.Infof("Adding remote URL %s to %s", src, urlDest)
+			if err := util.DownloadFileToDest(src, urlDest); err != nil {
+				return err
+			}
+			a.snapshotFiles = append(a.snapshotFiles, urlDest)
+		} else if util.IsFileLocalTarArchive(fullPath) {
+			logrus.Infof("Unpacking local tar archive %s to %s", src, dest)
+			extractedFiles, err := util.UnpackLocalTarArchive(fullPath, dest)
 			if err != nil {
 				return err
 			}
-			if util.IsSrcRemoteFileURL(file) {
-				urlDest := util.URLDestinationFilepath(file, dest, config.WorkingDir)
-				logrus.Infof("Adding remote URL %s to %s", file, urlDest)
-				if err := util.DownloadFileToDest(file, urlDest); err != nil {
-					return err
-				}
-				a.snapshotFiles = append(a.snapshotFiles, urlDest)
-				delete(srcMap, src)
-			} else if isFilenameSource && util.IsFileLocalTarArchive(filePath) {
-				logrus.Infof("Unpacking local tar archive %s to %s", file, dest)
-				if err := util.UnpackLocalTarArchive(filePath, dest); err != nil {
-					return err
-				}
-				// Add the unpacked files to the snapshotter
-				filesAdded, err := util.Files(dest)
-				if err != nil {
-					return err
-				}
-				logrus.Debugf("Added %v from local tar archive %s", filesAdded, file)
-				a.snapshotFiles = append(a.snapshotFiles, filesAdded...)
-				delete(srcMap, src)
-			}
+			logrus.Debugf("Added %v from local tar archive %s", extractedFiles, src)
+			a.snapshotFiles = append(a.snapshotFiles, extractedFiles...)
+		} else {
+			unresolvedSrcs = append(unresolvedSrcs, src)
 		}
 	}
 	// With the remaining "normal" sources, create and execute a standard copy command
-	if len(srcMap) == 0 {
+	if len(unresolvedSrcs) == 0 {
 		return nil
 	}
-	var regularSrcs []string
-	for src := range srcMap {
-		regularSrcs = append(regularSrcs, src)
-	}
+
 	copyCmd := CopyCommand{
 		cmd: &instructions.CopyCommand{
-			SourcesAndDest: append(regularSrcs, dest),
+			SourcesAndDest: append(unresolvedSrcs, dest),
 		},
 		buildcontext: a.buildcontext,
 	}
-	if err := copyCmd.ExecuteCommand(config); err != nil {
+
+	if err := copyCmd.ExecuteCommand(config, buildArgs); err != nil {
 		return err
 	}
 	a.snapshotFiles = append(a.snapshotFiles, copyCmd.snapshotFiles...)
 	return nil
-}
-
-func isFilenameSource(srcMap map[string][]string, fileName string) (bool, error) {
-	for src := range srcMap {
-		matched, err := filepath.Match(src, fileName)
-		if err != nil {
-			return false, err
-		}
-		if matched || (src == fileName) {
-			return true, nil
-		}
-	}
-	return false, nil
 }
 
 // FilesToSnapshot should return an empty array if still nil; no files were changed
@@ -134,7 +103,35 @@ func (a *AddCommand) FilesToSnapshot() []string {
 	return a.snapshotFiles
 }
 
-// CreatedBy returns some information about the command for the image config
-func (a *AddCommand) CreatedBy() string {
-	return strings.Join(a.cmd.SourcesAndDest, " ")
+// String returns some information about the command for the image config
+func (a *AddCommand) String() string {
+	return a.cmd.String()
+}
+
+func (a *AddCommand) FilesUsedFromContext(config *v1.Config, buildArgs *dockerfile.BuildArgs) ([]string, error) {
+	replacementEnvs := buildArgs.ReplacementEnvs(config.Env)
+
+	srcs, _, err := resolveEnvAndWildcards(a.cmd.SourcesAndDest, a.buildcontext, replacementEnvs)
+	if err != nil {
+		return nil, err
+	}
+
+	files := []string{}
+	for _, src := range srcs {
+		if util.IsSrcRemoteFileURL(src) {
+			continue
+		}
+		if util.IsFileLocalTarArchive(src) {
+			continue
+		}
+		fullPath := filepath.Join(a.buildcontext, src)
+		files = append(files, fullPath)
+	}
+
+	logrus.Infof("Using files from context: %v", files)
+	return files, nil
+}
+
+func (a *AddCommand) MetadataOnly() bool {
+	return false
 }

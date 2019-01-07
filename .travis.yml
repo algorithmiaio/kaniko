@@ -2,8 +2,8 @@ language: go
 os: linux
 
 go:
-  - 1.9.x
-go_import_path: github.com/GoogleCloudPlatform/kaniko
+  - "1.10"
+go_import_path: github.com/GoogleContainerTools/kaniko
 
 script:
   - make test

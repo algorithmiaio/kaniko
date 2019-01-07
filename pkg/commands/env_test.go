@@ -16,45 +16,16 @@ limitations under the License.
 package commands
 
 import (
-	"github.com/GoogleCloudPlatform/kaniko/testutil"
-	"github.com/containers/image/manifest"
-	"github.com/docker/docker/builder/dockerfile/instructions"
 	"testing"
+
+	"github.com/GoogleContainerTools/kaniko/pkg/dockerfile"
+	"github.com/GoogleContainerTools/kaniko/testutil"
+	"github.com/google/go-containerregistry/pkg/v1"
+	"github.com/moby/buildkit/frontend/dockerfile/instructions"
 )
 
-func TestUpdateEnvConfig(t *testing.T) {
-	cfg := &manifest.Schema2Config{
-		Env: []string{
-			"PATH=/path/to/dir",
-			"hey=hey",
-		},
-	}
-
-	newEnvs := []instructions.KeyValuePair{
-		{
-			Key:   "foo",
-			Value: "foo2",
-		},
-		{
-			Key:   "PATH",
-			Value: "/new/path/",
-		},
-		{
-			Key:   "foo",
-			Value: "newfoo",
-		},
-	}
-
-	expectedEnvArray := []string{
-		"PATH=/new/path/",
-		"hey=hey",
-		"foo=newfoo",
-	}
-	updateConfigEnv(newEnvs, cfg)
-	testutil.CheckErrorAndDeepEqual(t, false, nil, expectedEnvArray, cfg.Env)
-}
 func Test_EnvExecute(t *testing.T) {
-	cfg := &manifest.Schema2Config{
+	cfg := &v1.Config{
 		Env: []string{
 			"path=/usr/",
 			"home=/root",
@@ -62,7 +33,7 @@ func Test_EnvExecute(t *testing.T) {
 	}
 
 	envCmd := &EnvCommand{
-		&instructions.EnvCommand{
+		cmd: &instructions.EnvCommand{
 			Env: []instructions.KeyValuePair{
 				{
 					Key:   "path",
@@ -76,6 +47,10 @@ func Test_EnvExecute(t *testing.T) {
 					Key:   "$path",
 					Value: "$home/",
 				},
+				{
+					Key:   "$buildArg1",
+					Value: "$buildArg2",
+				},
 			},
 		},
 	}
@@ -85,7 +60,20 @@ func Test_EnvExecute(t *testing.T) {
 		"home=/root",
 		"HOME=/root",
 		"/usr/=/root/",
+		"foo=foo2",
 	}
-	err := envCmd.ExecuteCommand(cfg)
+	buildArgs := setUpBuildArgs()
+	err := envCmd.ExecuteCommand(cfg, buildArgs)
 	testutil.CheckErrorAndDeepEqual(t, false, err, expectedEnvs, cfg.Env)
+}
+
+func setUpBuildArgs() *dockerfile.BuildArgs {
+	buildArgs := dockerfile.NewBuildArgs([]string{
+		"buildArg1=foo",
+		"buildArg2=foo2",
+	})
+	buildArgs.AddArg("buildArg1", nil)
+	d := "default"
+	buildArgs.AddArg("buildArg2", &d)
+	return buildArgs
 }

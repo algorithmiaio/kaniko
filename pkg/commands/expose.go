@@ -20,27 +20,31 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/GoogleCloudPlatform/kaniko/pkg/util"
-	"github.com/containers/image/manifest"
-	"github.com/docker/docker/builder/dockerfile/instructions"
+	"github.com/GoogleContainerTools/kaniko/pkg/dockerfile"
+
+	"github.com/GoogleContainerTools/kaniko/pkg/util"
+	"github.com/google/go-containerregistry/pkg/v1"
+	"github.com/moby/buildkit/frontend/dockerfile/instructions"
 	"github.com/sirupsen/logrus"
 )
 
 type ExposeCommand struct {
+	BaseCommand
 	cmd *instructions.ExposeCommand
 }
 
-func (r *ExposeCommand) ExecuteCommand(config *manifest.Schema2Config) error {
+func (r *ExposeCommand) ExecuteCommand(config *v1.Config, buildArgs *dockerfile.BuildArgs) error {
 	logrus.Info("cmd: EXPOSE")
 	// Grab the currently exposed ports
 	existingPorts := config.ExposedPorts
 	if existingPorts == nil {
-		existingPorts = make(map[manifest.Schema2Port]struct{})
+		existingPorts = make(map[string]struct{})
 	}
+	replacementEnvs := buildArgs.ReplacementEnvs(config.Env)
 	// Add any new ones in
 	for _, p := range r.cmd.Ports {
 		// Resolve any environment variables
-		p, err := util.ResolveEnvironmentReplacement(p, config.Env, false)
+		p, err := util.ResolveEnvironmentReplacement(p, replacementEnvs, false)
 		if err != nil {
 			return err
 		}
@@ -53,8 +57,7 @@ func (r *ExposeCommand) ExecuteCommand(config *manifest.Schema2Config) error {
 			return fmt.Errorf("Invalid protocol: %s", protocol)
 		}
 		logrus.Infof("Adding exposed port: %s", p)
-		var x struct{}
-		existingPorts[manifest.Schema2Port(p)] = x
+		existingPorts[p] = struct{}{}
 	}
 	config.ExposedPorts = existingPorts
 	return nil
@@ -70,11 +73,6 @@ func validProtocol(protocol string) bool {
 	return false
 }
 
-func (r *ExposeCommand) FilesToSnapshot() []string {
-	return []string{}
-}
-
-func (r *ExposeCommand) CreatedBy() string {
-	s := []string{r.cmd.Name()}
-	return strings.Join(append(s, r.cmd.Ports...), " ")
+func (r *ExposeCommand) String() string {
+	return r.cmd.String()
 }

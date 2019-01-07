@@ -16,83 +16,87 @@ limitations under the License.
 package commands
 
 import (
-	"github.com/GoogleCloudPlatform/kaniko/testutil"
-	"github.com/containers/image/manifest"
-	"github.com/docker/docker/builder/dockerfile/instructions"
 	"testing"
+
+	"github.com/GoogleContainerTools/kaniko/pkg/dockerfile"
+
+	"github.com/GoogleContainerTools/kaniko/testutil"
+	"github.com/google/go-containerregistry/pkg/v1"
+	"github.com/moby/buildkit/frontend/dockerfile/instructions"
 )
 
 var userTests = []struct {
 	user        string
-	expectedUid string
+	expectedUID string
 	shouldError bool
 }{
 	{
 		user:        "root",
-		expectedUid: "0",
+		expectedUID: "root",
 		shouldError: false,
 	},
 	{
 		user:        "0",
-		expectedUid: "0",
+		expectedUID: "0",
 		shouldError: false,
 	},
 	{
 		user:        "fakeUser",
-		expectedUid: "",
+		expectedUID: "",
 		shouldError: true,
 	},
 	{
 		user:        "root:root",
-		expectedUid: "0:0",
+		expectedUID: "root:root",
 		shouldError: false,
 	},
 	{
 		user:        "0:root",
-		expectedUid: "0:0",
+		expectedUID: "0:root",
 		shouldError: false,
 	},
 	{
 		user:        "root:0",
-		expectedUid: "0:0",
+		expectedUID: "root:0",
 		shouldError: false,
 	},
 	{
 		user:        "0:0",
-		expectedUid: "0:0",
+		expectedUID: "0:0",
 		shouldError: false,
 	},
 	{
 		user:        "root:fakeGroup",
-		expectedUid: "",
+		expectedUID: "",
 		shouldError: true,
 	},
 	{
 		user:        "$envuser",
-		expectedUid: "0",
+		expectedUID: "root",
 		shouldError: false,
 	},
 	{
 		user:        "root:$envgroup",
-		expectedUid: "0:0",
+		expectedUID: "root:root",
 		shouldError: false,
 	},
 }
 
 func TestUpdateUser(t *testing.T) {
 	for _, test := range userTests {
-		cfg := &manifest.Schema2Config{
+		cfg := &v1.Config{
 			Env: []string{
 				"envuser=root",
 				"envgroup=root",
 			},
 		}
 		cmd := UserCommand{
-			&instructions.UserCommand{
+			cmd: &instructions.UserCommand{
 				User: test.user,
 			},
 		}
-		err := cmd.ExecuteCommand(cfg)
-		testutil.CheckErrorAndDeepEqual(t, test.shouldError, err, test.expectedUid, cfg.User)
+		buildArgs := dockerfile.NewBuildArgs([]string{})
+		err := cmd.ExecuteCommand(cfg, buildArgs)
+		testutil.CheckErrorAndDeepEqual(t, test.shouldError, err, test.expectedUID, cfg.User)
 	}
 }

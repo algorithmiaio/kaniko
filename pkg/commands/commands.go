@@ -17,21 +17,37 @@ limitations under the License.
 package commands
 
 import (
-	"github.com/containers/image/manifest"
-	"github.com/docker/docker/builder/dockerfile/instructions"
+	"github.com/GoogleContainerTools/kaniko/pkg/dockerfile"
+	"github.com/google/go-containerregistry/pkg/v1"
+	"github.com/moby/buildkit/frontend/dockerfile/instructions"
 	"github.com/pkg/errors"
+	"github.com/sirupsen/logrus"
 )
+
+type CurrentCacheKey func() (string, error)
 
 type DockerCommand interface {
 	// ExecuteCommand is responsible for:
 	// 	1. Making required changes to the filesystem (ex. copying files for ADD/COPY or setting ENV variables)
 	//  2. Updating metadata fields in the config
 	// It should not change the config history.
-	ExecuteCommand(*manifest.Schema2Config) error
-	// The config history has a "created by" field, should return information about the command
-	CreatedBy() string
+	ExecuteCommand(*v1.Config, *dockerfile.BuildArgs) error
+	// Returns a string representation of the command
+	String() string
 	// A list of files to snapshot, empty for metadata commands or nil if we don't know
 	FilesToSnapshot() []string
+
+	// Return a cache-aware implementation of this command, if it exists.
+	CacheCommand(v1.Image) DockerCommand
+
+	// Return true if this command depends on the build context.
+	FilesUsedFromContext(*v1.Config, *dockerfile.BuildArgs) ([]string, error)
+
+	MetadataOnly() bool
+
+	RequiresUnpackedFS() bool
+
+	ShouldCacheOutput() bool
 }
 
 func GetCommand(cmd instructions.Command, buildcontext string) (DockerCommand, error) {
@@ -60,6 +76,17 @@ func GetCommand(cmd instructions.Command, buildcontext string) (DockerCommand, e
 		return &OnBuildCommand{cmd: c}, nil
 	case *instructions.VolumeCommand:
 		return &VolumeCommand{cmd: c}, nil
+	case *instructions.StopSignalCommand:
+		return &StopSignalCommand{cmd: c}, nil
+	case *instructions.ArgCommand:
+		return &ArgCommand{cmd: c}, nil
+	case *instructions.ShellCommand:
+		return &ShellCommand{cmd: c}, nil
+	case *instructions.HealthCheckCommand:
+		return &HealthCheckCommand{cmd: c}, nil
+	case *instructions.MaintainerCommand:
+		logrus.Warnf("%s is deprecated, skipping", cmd.Name())
+		return nil, nil
 	}
 	return nil, errors.Errorf("%s is not a supported command", cmd.Name())
 }

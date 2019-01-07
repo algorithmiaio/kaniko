@@ -16,46 +16,46 @@ limitations under the License.
 package commands
 
 import (
-	"github.com/GoogleCloudPlatform/kaniko/testutil"
-	"github.com/containers/image/manifest"
-	"github.com/containers/image/pkg/strslice"
-	"github.com/docker/docker/builder/dockerfile/instructions"
 	"testing"
+
+	"github.com/GoogleContainerTools/kaniko/testutil"
+	"github.com/google/go-containerregistry/pkg/v1"
+	"github.com/moby/buildkit/frontend/dockerfile/instructions"
 )
 
 var entrypointTests = []struct {
 	prependShell bool
 	cmdLine      []string
-	expectedCmd  strslice.StrSlice
+	expectedCmd  []string
 }{
 	{
 		prependShell: true,
 		cmdLine:      []string{"echo", "cmd1"},
-		expectedCmd:  strslice.StrSlice{"/bin/sh", "-c", "echo cmd1"},
+		expectedCmd:  []string{"/bin/sh", "-c", "echo cmd1"},
 	},
 	{
 		prependShell: false,
 		cmdLine:      []string{"echo", "cmd2"},
-		expectedCmd:  strslice.StrSlice{"echo", "cmd2"},
+		expectedCmd:  []string{"echo", "cmd2"},
 	},
 }
 
 func TestEntrypointExecuteCmd(t *testing.T) {
 
-	cfg := &manifest.Schema2Config{
+	cfg := &v1.Config{
 		Cmd: nil,
 	}
 
 	for _, test := range entrypointTests {
 		cmd := EntrypointCommand{
-			&instructions.EntrypointCommand{
+			cmd: &instructions.EntrypointCommand{
 				ShellDependantCmdLine: instructions.ShellDependantCmdLine{
 					PrependShell: test.prependShell,
 					CmdLine:      test.cmdLine,
 				},
 			},
 		}
-		err := cmd.ExecuteCommand(cfg)
+		err := cmd.ExecuteCommand(cfg, nil)
 		testutil.CheckErrorAndDeepEqual(t, false, err, test.expectedCmd, cfg.Entrypoint)
 	}
 }

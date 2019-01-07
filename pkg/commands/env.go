@@ -17,83 +17,25 @@ limitations under the License.
 package commands
 
 import (
-	"strings"
+	"github.com/GoogleContainerTools/kaniko/pkg/dockerfile"
 
-	"github.com/GoogleCloudPlatform/kaniko/pkg/util"
-	"github.com/containers/image/manifest"
-	"github.com/docker/docker/builder/dockerfile/instructions"
-	"github.com/sirupsen/logrus"
+	"github.com/GoogleContainerTools/kaniko/pkg/util"
+	"github.com/google/go-containerregistry/pkg/v1"
+	"github.com/moby/buildkit/frontend/dockerfile/instructions"
 )
 
 type EnvCommand struct {
+	BaseCommand
 	cmd *instructions.EnvCommand
 }
 
-func (e *EnvCommand) ExecuteCommand(config *manifest.Schema2Config) error {
-	logrus.Info("cmd: ENV")
+func (e *EnvCommand) ExecuteCommand(config *v1.Config, buildArgs *dockerfile.BuildArgs) error {
 	newEnvs := e.cmd.Env
-	for index, pair := range newEnvs {
-		expandedKey, err := util.ResolveEnvironmentReplacement(pair.Key, config.Env, false)
-		if err != nil {
-			return err
-		}
-		expandedValue, err := util.ResolveEnvironmentReplacement(pair.Value, config.Env, false)
-		if err != nil {
-			return err
-		}
-		newEnvs[index] = instructions.KeyValuePair{
-			Key:   expandedKey,
-			Value: expandedValue,
-		}
-	}
-	return updateConfigEnv(newEnvs, config)
+	replacementEnvs := buildArgs.ReplacementEnvs(config.Env)
+	return util.UpdateConfigEnv(newEnvs, config, replacementEnvs)
 }
 
-func updateConfigEnv(newEnvs []instructions.KeyValuePair, config *manifest.Schema2Config) error {
-	// First, convert config.Env array to []instruction.KeyValuePair
-	var kvps []instructions.KeyValuePair
-	for _, env := range config.Env {
-		entry := strings.Split(env, "=")
-		kvps = append(kvps, instructions.KeyValuePair{
-			Key:   entry[0],
-			Value: entry[1],
-		})
-	}
-	// Iterate through new environment variables, and replace existing keys
-	// We can't use a map because we need to preserve the order of the environment variables
-Loop:
-	for _, newEnv := range newEnvs {
-		for index, kvp := range kvps {
-			// If key exists, replace the KeyValuePair...
-			if kvp.Key == newEnv.Key {
-				logrus.Debugf("Replacing environment variable %v with %v in config", kvp, newEnv)
-				kvps[index] = newEnv
-				continue Loop
-			}
-		}
-		// ... Else, append it as a new env variable
-		kvps = append(kvps, newEnv)
-	}
-	// Convert back to array and set in config
-	envArray := []string{}
-	for _, kvp := range kvps {
-		entry := kvp.Key + "=" + kvp.Value
-		envArray = append(envArray, entry)
-	}
-	config.Env = envArray
-	return nil
-}
-
-// We know that no files have changed, so return an empty array
-func (e *EnvCommand) FilesToSnapshot() []string {
-	return []string{}
-}
-
-// CreatedBy returns some information about the command for the image config history
-func (e *EnvCommand) CreatedBy() string {
-	envArray := []string{e.cmd.Name()}
-	for _, pair := range e.cmd.Env {
-		envArray = append(envArray, pair.Key+"="+pair.Value)
-	}
-	return strings.Join(envArray, " ")
+// String returns some information about the command for the image config history
+func (e *EnvCommand) String() string {
+	return e.cmd.String()
 }

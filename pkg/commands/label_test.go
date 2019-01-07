@@ -17,14 +17,16 @@ limitations under the License.
 package commands
 
 import (
-	"github.com/GoogleCloudPlatform/kaniko/testutil"
-	"github.com/containers/image/manifest"
-	"github.com/docker/docker/builder/dockerfile/instructions"
 	"testing"
+
+	"github.com/GoogleContainerTools/kaniko/pkg/dockerfile"
+	"github.com/GoogleContainerTools/kaniko/testutil"
+	"github.com/google/go-containerregistry/pkg/v1"
+	"github.com/moby/buildkit/frontend/dockerfile/instructions"
 )
 
 func TestUpdateLabels(t *testing.T) {
-	cfg := &manifest.Schema2Config{
+	cfg := &v1.Config{
 		Labels: map[string]string{
 			"foo": "bar",
 		},
@@ -47,14 +49,25 @@ func TestUpdateLabels(t *testing.T) {
 			Key:   "backslashes",
 			Value: "lots\\\\ of\\\\ words",
 		},
+		{
+			Key:   "$label",
+			Value: "foo",
+		},
 	}
 
-	expectedLabels := map[string]string{
-		"foo":         "override",
-		"bar":         "baz",
-		"multiword":   "lots of words",
-		"backslashes": "lots\\ of\\ words",
+	arguments := []string{
+		"label=build_arg_label",
 	}
-	updateLabels(labels, cfg)
+
+	buildArgs := dockerfile.NewBuildArgs(arguments)
+	buildArgs.AddArg("label", nil)
+	expectedLabels := map[string]string{
+		"foo":             "override",
+		"bar":             "baz",
+		"multiword":       "lots of words",
+		"backslashes":     "lots\\ of\\ words",
+		"build_arg_label": "foo",
+	}
+	updateLabels(labels, cfg, buildArgs)
 	testutil.CheckErrorAndDeepEqual(t, false, nil, expectedLabels, cfg.Labels)
 }

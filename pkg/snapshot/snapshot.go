@@ -17,16 +17,20 @@ limitations under the License.
 package snapshot
 
 import (
-	"archive/tar"
-	"bytes"
-	"github.com/GoogleCloudPlatform/kaniko/pkg/util"
-	"github.com/sirupsen/logrus"
-
-	"io"
+	"fmt"
 	"io/ioutil"
 	"os"
 	"path/filepath"
+	"syscall"
+
+	"github.com/GoogleContainerTools/kaniko/pkg/constants"
+
+	"github.com/GoogleContainerTools/kaniko/pkg/util"
+	"github.com/sirupsen/logrus"
 )
+
+// For testing
+var snapshotPathPrefix = constants.KanikoDir
 
 // Snapshotter holds the root directory from which to take snapshots, and a list of snapshots taken
 type Snapshotter struct {
@@ -41,94 +45,158 @@ func NewSnapshotter(l *LayeredMap, d string) *Snapshotter {
 
 // Init initializes a new snapshotter
 func (s *Snapshotter) Init() error {
-	if _, err := s.snapShotFS(ioutil.Discard); err != nil {
-		return err
-	}
-	return nil
+	_, err := s.TakeSnapshotFS()
+	return err
 }
 
-// TakeSnapshot takes a snapshot of the filesystem, avoiding directories in the whitelist, and creates
+// Key returns a string based on the current state of the file system
+func (s *Snapshotter) Key() (string, error) {
+	return s.l.Key()
+}
+
+// TakeSnapshot takes a snapshot of the specified files, avoiding directories in the whitelist, and creates
 // a tarball of the changed files. Return contents of the tarball, and whether or not any files were changed
-func (s *Snapshotter) TakeSnapshot(files []string) ([]byte, error) {
-	if files != nil {
-		return s.TakeSnapshotOfFiles(files)
-	}
-	logrus.Info("Taking snapshot of full filesystem...")
-	buf := bytes.NewBuffer([]byte{})
-	filesAdded, err := s.snapShotFS(buf)
+func (s *Snapshotter) TakeSnapshot(files []string) (string, error) {
+	f, err := ioutil.TempFile(snapshotPathPrefix, "")
 	if err != nil {
-		return nil, err
+		return "", err
 	}
-	contents, err := ioutil.ReadAll(buf)
-	if err != nil {
-		return nil, err
-	}
-	if !filesAdded {
-		return nil, nil
-	}
-	return contents, err
-}
+	defer f.Close()
 
-// TakeSnapshotOfFiles takes a snapshot of specific files
-// Used for ADD/COPY commands, when we know which files have changed
-func (s *Snapshotter) TakeSnapshotOfFiles(files []string) ([]byte, error) {
-	logrus.Infof("Taking snapshot of files %v...", files)
 	s.l.Snapshot()
 	if len(files) == 0 {
 		logrus.Info("No files changed in this command, skipping snapshotting.")
-		return nil, nil
+		return "", nil
 	}
-	buf := bytes.NewBuffer([]byte{})
-	w := tar.NewWriter(buf)
-	defer w.Close()
-	filesAdded := false
+	logrus.Info("Taking snapshot of files...")
+	logrus.Debugf("Taking snapshot of files %v", files)
+	snapshottedFiles := make(map[string]bool)
+
+	t := util.NewTar(f)
+	defer t.Close()
+
+	// First add to the tar any parent directories that haven't been added
+	parentDirs := []string{}
 	for _, file := range files {
-		info, err := os.Lstat(file)
-		if err != nil {
-			return nil, err
-		}
-		if util.PathInWhitelist(file, s.directory) {
-			logrus.Debugf("Not adding %s to layer, as it is whitelisted", file)
+		parents := util.ParentDirectories(file)
+		parentDirs = append(parentDirs, parents...)
+	}
+	for _, file := range parentDirs {
+		file = filepath.Clean(file)
+		if val, ok := snapshottedFiles[file]; ok && val {
 			continue
 		}
-		// Only add to the tar if we add it to the layeredmap.
-		maybeAdd, err := s.l.MaybeAdd(file)
+		snapshottedFiles[file] = true
+
+		fileAdded, err := s.l.MaybeAdd(file)
 		if err != nil {
-			return nil, err
+			return "", fmt.Errorf("Unable to add parent dir %s to layered map: %s", file, err)
 		}
-		if maybeAdd {
-			filesAdded = true
-			util.AddToTar(file, info, w)
+
+		if fileAdded {
+			err = t.AddFileToTar(file)
+			if err != nil {
+				return "", fmt.Errorf("Error adding parent dir %s to tar: %s", file, err)
+			}
 		}
 	}
-	if !filesAdded {
-		return nil, nil
+	// Next add the files themselves to the tar
+	for _, file := range files {
+		file = filepath.Clean(file)
+		if val, ok := snapshottedFiles[file]; ok && val {
+			continue
+		}
+		snapshottedFiles[file] = true
+
+		if err := s.l.Add(file); err != nil {
+			return "", fmt.Errorf("Unable to add file %s to layered map: %s", file, err)
+		}
+		if err := t.AddFileToTar(file); err != nil {
+			return "", fmt.Errorf("Error adding file %s to tar: %s", file, err)
+		}
 	}
-	return ioutil.ReadAll(buf)
+	return f.Name(), nil
 }
 
-func (s *Snapshotter) snapShotFS(f io.Writer) (bool, error) {
+// TakeSnapshotFS takes a snapshot of the filesystem, avoiding directories in the whitelist, and creates
+// a tarball of the changed files.
+func (s *Snapshotter) TakeSnapshotFS() (string, error) {
+	logrus.Info("Taking snapshot of full filesystem...")
+
+	f, err := ioutil.TempFile(snapshotPathPrefix, "")
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	// Some of the operations that follow (e.g. hashing) depend on the file system being synced,
+	// for example the hashing function that determines if files are equal uses the mtime of the files,
+	// which can lag if sync is not called. Unfortunately there can still be lag if too much data needs
+	// to be flushed or the disk does its own caching/buffering.
+	syscall.Sync()
+
 	s.l.Snapshot()
-	filesAdded := false
-	w := tar.NewWriter(f)
-	defer w.Close()
+	existingPaths := s.l.GetFlattenedPathsForWhiteOut()
+	t := util.NewTar(f)
+	defer t.Close()
 
-	err := filepath.Walk(s.directory, func(path string, info os.FileInfo, err error) error {
-		if util.PathInWhitelist(path, s.directory) {
-			logrus.Debugf("Not adding %s to layer, as it's whitelisted", path)
-			return nil
-		}
-
-		// Only add to the tar if we add it to the layeredmap.
-		maybeAdd, err := s.l.MaybeAdd(path)
+	// Save the fs state in a map to iterate over later.
+	memFs := map[string]os.FileInfo{}
+	filepath.Walk(s.directory, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
-		if maybeAdd {
-			filesAdded = true
-			return util.AddToTar(path, info, w)
+		if util.IsInWhitelist(path) {
+			if util.IsDestDir(path) {
+				logrus.Infof("Skipping paths under %s, as it is a whitelisted directory", path)
+				return filepath.SkipDir
+			}
+			return nil
 		}
+
+		memFs[path] = info
 		return nil
 	})
-	return filesAdded, err
+
+	// First handle whiteouts
+	for p := range memFs {
+		delete(existingPaths, p)
+	}
+	for path := range existingPaths {
+		// Only add the whiteout if the directory for the file still exists.
+		dir := filepath.Dir(path)
+		if _, ok := memFs[dir]; ok {
+			if s.l.MaybeAddWhiteout(path) {
+				logrus.Infof("Adding whiteout for %s", path)
+				if err := t.Whiteout(path); err != nil {
+					return "", err
+				}
+			}
+		}
+	}
+
+	// Now create the tar.
+	for path := range memFs {
+		whitelisted, err := util.CheckWhitelist(path)
+		if err != nil {
+			return "", err
+		}
+		if whitelisted {
+			logrus.Debugf("Not adding %s to layer, as it's whitelisted", path)
+			continue
+		}
+		// Only add to the tar if we add it to the layeredmap.
+		maybeAdd, err := s.l.MaybeAdd(path)
+		if err != nil {
+			return "", err
+		}
+		if maybeAdd {
+			logrus.Debugf("Adding %s to layer, because it was changed.", path)
+			if err := t.AddFileToTar(path); err != nil {
+				return "", err
+			}
+		}
+	}
+
+	return f.Name(), nil
 }

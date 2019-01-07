@@ -17,10 +17,13 @@ limitations under the License.
 package commands
 
 import (
-	"github.com/GoogleCloudPlatform/kaniko/testutil"
-	"github.com/containers/image/manifest"
-	"github.com/docker/docker/builder/dockerfile/instructions"
 	"testing"
+
+	"github.com/GoogleContainerTools/kaniko/pkg/dockerfile"
+
+	"github.com/GoogleContainerTools/kaniko/testutil"
+	"github.com/google/go-containerregistry/pkg/v1"
+	"github.com/moby/buildkit/frontend/dockerfile/instructions"
 )
 
 var onbuildTests = []struct {
@@ -32,7 +35,7 @@ var onbuildTests = []struct {
 		expression:   "RUN echo \\\"hi\\\" > $dir",
 		onbuildArray: nil,
 		expectedArray: []string{
-			"RUN echo \"hi\" > /some/dir",
+			"RUN echo \\\"hi\\\" > $dir",
 		},
 	},
 	{
@@ -49,7 +52,7 @@ var onbuildTests = []struct {
 
 func TestExecuteOnbuild(t *testing.T) {
 	for _, test := range onbuildTests {
-		cfg := &manifest.Schema2Config{
+		cfg := &v1.Config{
 			Env: []string{
 				"dir=/some/dir",
 			},
@@ -57,12 +60,12 @@ func TestExecuteOnbuild(t *testing.T) {
 		}
 
 		onbuildCmd := &OnBuildCommand{
-			&instructions.OnbuildCommand{
+			cmd: &instructions.OnbuildCommand{
 				Expression: test.expression,
 			},
 		}
-
-		err := onbuildCmd.ExecuteCommand(cfg)
+		buildArgs := dockerfile.NewBuildArgs([]string{})
+		err := onbuildCmd.ExecuteCommand(cfg, buildArgs)
 		testutil.CheckErrorAndDeepEqual(t, false, err, test.expectedArray, cfg.OnBuild)
 	}
 

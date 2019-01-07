@@ -17,16 +17,20 @@ limitations under the License.
 package util
 
 import (
-	"github.com/docker/docker/builder/dockerfile/instructions"
-	"github.com/docker/docker/builder/dockerfile/parser"
-	"github.com/docker/docker/builder/dockerfile/shell"
-	"github.com/pkg/errors"
-	"github.com/sirupsen/logrus"
 	"net/http"
 	"net/url"
 	"os"
+	"os/user"
 	"path/filepath"
 	"strings"
+
+	"github.com/GoogleContainerTools/kaniko/pkg/constants"
+	"github.com/google/go-containerregistry/pkg/v1"
+	"github.com/moby/buildkit/frontend/dockerfile/instructions"
+	"github.com/moby/buildkit/frontend/dockerfile/parser"
+	"github.com/moby/buildkit/frontend/dockerfile/shell"
+	"github.com/pkg/errors"
+	"github.com/sirupsen/logrus"
 )
 
 // ResolveEnvironmentReplacementList resolves a list of values by calling resolveEnvironmentReplacement
@@ -66,7 +70,7 @@ func ResolveEnvironmentReplacement(value string, envs []string, isFilepath bool)
 		return "", err
 	}
 	fp = filepath.Clean(fp)
-	if IsDestDir(value) {
+	if IsDestDir(value) && !IsDestDir(fp) {
 		fp = fp + "/"
 	}
 	return fp, nil
@@ -83,8 +87,8 @@ func ContainsWildcards(paths []string) bool {
 }
 
 // ResolveSources resolves the given sources if the sources contains wildcards
-// It returns a map of [src]:[files rooted at src]
-func ResolveSources(srcsAndDest instructions.SourcesAndDest, root string) (map[string][]string, error) {
+// It returns a list of resolved sources
+func ResolveSources(srcsAndDest instructions.SourcesAndDest, root string) ([]string, error) {
 	srcs := srcsAndDest[:len(srcsAndDest)-1]
 	// If sources contain wildcards, we first need to resolve them to actual paths
 	if ContainsWildcards(srcs) {
@@ -99,13 +103,8 @@ func ResolveSources(srcsAndDest instructions.SourcesAndDest, root string) (map[s
 		}
 		logrus.Debugf("Resolved sources to %v", srcs)
 	}
-	// Now, get a map of [src]:[files rooted at src]
-	srcMap, err := SourcesToFilesMap(srcs, root)
-	if err != nil {
-		return nil, err
-	}
 	// Check to make sure the sources are valid
-	return srcMap, IsSrcsValid(srcsAndDest, srcMap)
+	return srcs, IsSrcsValid(srcsAndDest, srcs, root)
 }
 
 // matchSources returns a list of sources that match wildcards
@@ -118,6 +117,9 @@ func matchSources(srcs, files []string) ([]string, error) {
 		}
 		src = filepath.Clean(src)
 		for _, file := range files {
+			if filepath.IsAbs(src) {
+				file = filepath.Join(constants.RootDir, file)
+			}
 			matched, err := filepath.Match(src, file)
 			if err != nil {
 				return nil, err
@@ -131,7 +133,14 @@ func matchSources(srcs, files []string) ([]string, error) {
 }
 
 func IsDestDir(path string) bool {
-	return strings.HasSuffix(path, "/") || path == "."
+	// try to stat the path
+	fileInfo, err := os.Stat(path)
+	if err != nil {
+		// fall back to string-based determination
+		return strings.HasSuffix(path, "/") || path == "."
+	}
+	// if it's a real path, check the fs response
+	return fileInfo.IsDir()
 }
 
 // DestinationFilepath returns the destination filepath from the build context to the image filesystem
@@ -141,24 +150,9 @@ func IsDestDir(path string) bool {
 // If source is a dir:
 //	Assume dest is also a dir, and copy to dest/relpath
 // If dest is not an absolute filepath, add /cwd to the beginning
-func DestinationFilepath(filename, srcName, dest, cwd, buildcontext string) (string, error) {
-	fi, err := os.Lstat(filepath.Join(buildcontext, filename))
-	if err != nil {
-		return "", err
-	}
-	src, err := os.Lstat(filepath.Join(buildcontext, srcName))
-	if err != nil {
-		return "", err
-	}
-	if src.IsDir() || IsDestDir(dest) {
-		relPath, err := filepath.Rel(srcName, filename)
-		if err != nil {
-			return "", err
-		}
-		if relPath == "." && !fi.IsDir() {
-			relPath = filepath.Base(filename)
-		}
-		destPath := filepath.Join(dest, relPath)
+func DestinationFilepath(src, dest, cwd string) (string, error) {
+	if IsDestDir(dest) {
+		destPath := filepath.Join(dest, filepath.Base(src))
 		if filepath.IsAbs(dest) {
 			return destPath, nil
 		}
@@ -187,45 +181,58 @@ func URLDestinationFilepath(rawurl, dest, cwd string) string {
 	return destPath
 }
 
-// SourcesToFilesMap returns a map of [src]:[files rooted at source]
-func SourcesToFilesMap(srcs []string, root string) (map[string][]string, error) {
-	srcMap := make(map[string][]string)
-	for _, src := range srcs {
+func IsSrcsValid(srcsAndDest instructions.SourcesAndDest, resolvedSources []string, root string) error {
+	srcs := srcsAndDest[:len(srcsAndDest)-1]
+	dest := srcsAndDest[len(srcsAndDest)-1]
+
+	if !ContainsWildcards(srcs) {
+		totalSrcs := 0
+		for _, src := range srcs {
+			if excludeFile(src, root) {
+				continue
+			}
+			totalSrcs++
+		}
+		if totalSrcs > 1 && !IsDestDir(dest) {
+			return errors.New("when specifying multiple sources in a COPY command, destination must be a directory and end in '/'")
+		}
+	}
+
+	// If there is only one source and it's a directory, docker assumes the dest is a directory
+	if len(resolvedSources) == 1 {
+		if IsSrcRemoteFileURL(resolvedSources[0]) {
+			return nil
+		}
+		fi, err := os.Lstat(filepath.Join(root, resolvedSources[0]))
+		if err != nil {
+			return err
+		}
+		if fi.IsDir() {
+			return nil
+		}
+	}
+
+	totalFiles := 0
+	for _, src := range resolvedSources {
 		if IsSrcRemoteFileURL(src) {
-			srcMap[src] = []string{src}
+			totalFiles++
 			continue
 		}
 		src = filepath.Clean(src)
 		files, err := RelativeFiles(src, root)
 		if err != nil {
-			return nil, err
+			return err
 		}
-		srcMap[src] = files
-	}
-	return srcMap, nil
-}
-
-// IsSrcsValid returns an error if the sources provided are invalid, or nil otherwise
-func IsSrcsValid(srcsAndDest instructions.SourcesAndDest, srcMap map[string][]string) error {
-	srcs := srcsAndDest[:len(srcsAndDest)-1]
-	dest := srcsAndDest[len(srcsAndDest)-1]
-
-	totalFiles := 0
-	for _, files := range srcMap {
-		totalFiles += len(files)
+		for _, file := range files {
+			if excludeFile(file, root) {
+				continue
+			}
+			totalFiles++
+		}
 	}
 	if totalFiles == 0 {
 		return errors.New("copy failed: no source files specified")
 	}
-
-	if !ContainsWildcards(srcs) {
-		// If multiple sources and destination isn't a directory, return an error
-		if len(srcs) > 1 && !IsDestDir(dest) {
-			return errors.New("when specifying multiple sources in a COPY command, destination must be a directory and end in '/'")
-		}
-		return nil
-	}
-
 	// If there are wildcards, and the destination is a file, there must be exactly one file to copy over,
 	// Otherwise, return an error
 	if !IsDestDir(dest) && totalFiles > 1 {
@@ -240,8 +247,128 @@ func IsSrcRemoteFileURL(rawurl string) bool {
 		return false
 	}
 	_, err = http.Get(rawurl)
-	if err != nil {
-		return false
+	return err == nil
+}
+
+func UpdateConfigEnv(newEnvs []instructions.KeyValuePair, config *v1.Config, replacementEnvs []string) error {
+	for index, pair := range newEnvs {
+		expandedKey, err := ResolveEnvironmentReplacement(pair.Key, replacementEnvs, false)
+		if err != nil {
+			return err
+		}
+		expandedValue, err := ResolveEnvironmentReplacement(pair.Value, replacementEnvs, false)
+		if err != nil {
+			return err
+		}
+		newEnvs[index] = instructions.KeyValuePair{
+			Key:   expandedKey,
+			Value: expandedValue,
+		}
 	}
-	return true
+
+	// First, convert config.Env array to []instruction.KeyValuePair
+	var kvps []instructions.KeyValuePair
+	for _, env := range config.Env {
+		entry := strings.SplitN(env, "=", 2)
+		kvps = append(kvps, instructions.KeyValuePair{
+			Key:   entry[0],
+			Value: entry[1],
+		})
+	}
+	// Iterate through new environment variables, and replace existing keys
+	// We can't use a map because we need to preserve the order of the environment variables
+Loop:
+	for _, newEnv := range newEnvs {
+		for index, kvp := range kvps {
+			// If key exists, replace the KeyValuePair...
+			if kvp.Key == newEnv.Key {
+				logrus.Debugf("Replacing environment variable %v with %v in config", kvp, newEnv)
+				kvps[index] = newEnv
+				continue Loop
+			}
+		}
+		// ... Else, append it as a new env variable
+		kvps = append(kvps, newEnv)
+	}
+	// Convert back to array and set in config
+	envArray := []string{}
+	for _, kvp := range kvps {
+		entry := kvp.Key + "=" + kvp.Value
+		envArray = append(envArray, entry)
+	}
+	config.Env = envArray
+	return nil
+}
+
+// Takes a user string from a command such as "user:group" and replaces
+// any environment variables as needed.  Will return the resolved and split
+// user and group
+func ResolveUserAndGroup(commandUserStr string, replacementEnvs []string) (string, string, error) {
+	userAndGroup := strings.Split(commandUserStr, ":")
+	userStr, err := ResolveEnvironmentReplacement(userAndGroup[0], replacementEnvs, false)
+	if err != nil {
+		return "", "", err
+	}
+	var groupStr string
+	if len(userAndGroup) > 1 {
+		groupStr, err = ResolveEnvironmentReplacement(userAndGroup[1], replacementEnvs, false)
+		if err != nil {
+			return "", "", err
+		}
+	}
+
+	return userStr, groupStr, nil
+}
+
+// Takes a user string like "user:group" and returns strings for "uid" and "gid"
+// for the corresponding user as a string, replacing any build arguments
+// and environment variables.  Group is not required to be specified, and
+// if left off, gid will be empty
+func GetUIDGidFromUserString(commandUserStr string, replacementEnvs []string) (string, string, error) {
+	userStr, groupStr, err := ResolveUserAndGroup(commandUserStr, replacementEnvs)
+	if err != nil {
+		return "", "", err
+	}
+
+	return GetUserFromUsername(userStr, groupStr)
+}
+
+func GetUserFromUsername(userStr string, groupStr string) (string, string, error) {
+	// Lookup by username
+	userObj, err := user.Lookup(userStr)
+	if err != nil {
+		if _, ok := err.(user.UnknownUserError); ok {
+			// Lookup by id
+			userObj, err = user.LookupId(userStr)
+			if err != nil {
+				return "", "", err
+			}
+		} else {
+			return "", "", err
+		}
+	}
+
+	// Same dance with groups
+	var group *user.Group
+	if groupStr != "" {
+		group, err = user.LookupGroup(groupStr)
+		if err != nil {
+			if _, ok := err.(user.UnknownGroupError); ok {
+				group, err = user.LookupGroupId(groupStr)
+				if err != nil {
+					return "", "", err
+				}
+			} else {
+				return "", "", err
+			}
+		}
+	}
+
+	uid := userObj.Uid
+	gid := ""
+	if group != nil {
+		gid = group.Gid
+	}
+
+	return uid, gid, nil
 }

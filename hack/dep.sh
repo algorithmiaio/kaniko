@@ -17,7 +17,7 @@
 #!/bin/bash
 set -e -o pipefail
 
-DEP_VERSION=v0.4.1
+DEP_VERSION=v0.5.0
 DEP_DIR="$GOPATH/src/github.com/golang/dep"
 
 install_dep() {
@@ -31,7 +31,7 @@ install_dep() {
 }
 
 if [ -z "$VALIDATE_UPSTREAM" ]; then
-	VALIDATE_REPO='git@github.com:GoogleCloudPlatform/kaniko.git'
+	VALIDATE_REPO='git@github.com:GoogleContainerTools/kaniko.git'
 	VALIDATE_BRANCH='master'
 
 	VALIDATE_HEAD="$(git rev-parse --verify HEAD)"

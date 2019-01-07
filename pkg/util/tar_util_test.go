@@ -17,14 +17,14 @@ limitations under the License.
 package util
 
 import (
-	"archive/tar"
 	"compress/gzip"
-	"github.com/GoogleCloudPlatform/kaniko/testutil"
 	"io"
 	"io/ioutil"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/GoogleContainerTools/kaniko/testutil"
 )
 
 var regularFiles = []string{"file", "file.tar", "file.tar.gz"}
@@ -91,16 +91,11 @@ func setUpFilesAndTars(testDir string) error {
 }
 
 func createTar(testdir string, writer io.Writer) error {
-
-	w := tar.NewWriter(writer)
-	defer w.Close()
+	t := NewTar(writer)
+	defer t.Close()
 	for _, regFile := range regularFiles {
 		filePath := filepath.Join(testdir, regFile)
-		fi, err := os.Stat(filePath)
-		if err != nil {
-			return err
-		}
-		if err := AddToTar(filePath, fi, w); err != nil {
+		if err := t.AddFileToTar(filePath); err != nil {
 			return err
 		}
 	}

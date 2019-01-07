@@ -17,23 +17,28 @@ limitations under the License.
 package commands
 
 import (
-	"github.com/GoogleCloudPlatform/kaniko/pkg/util"
-	"github.com/containers/image/manifest"
-	"github.com/docker/docker/builder/dockerfile/instructions"
-	"github.com/sirupsen/logrus"
 	"os"
 	"path/filepath"
+
+	"github.com/GoogleContainerTools/kaniko/pkg/dockerfile"
+
+	"github.com/GoogleContainerTools/kaniko/pkg/util"
+	"github.com/google/go-containerregistry/pkg/v1"
+	"github.com/moby/buildkit/frontend/dockerfile/instructions"
+	"github.com/sirupsen/logrus"
 )
 
 type WorkdirCommand struct {
+	BaseCommand
 	cmd           *instructions.WorkdirCommand
 	snapshotFiles []string
 }
 
-func (w *WorkdirCommand) ExecuteCommand(config *manifest.Schema2Config) error {
+func (w *WorkdirCommand) ExecuteCommand(config *v1.Config, buildArgs *dockerfile.BuildArgs) error {
 	logrus.Info("cmd: workdir")
 	workdirPath := w.cmd.Path
-	resolvedWorkingDir, err := util.ResolveEnvironmentReplacement(workdirPath, config.Env, true)
+	replacementEnvs := buildArgs.ReplacementEnvs(config.Env)
+	resolvedWorkingDir, err := util.ResolveEnvironmentReplacement(workdirPath, replacementEnvs, true)
 	if err != nil {
 		return err
 	}
@@ -43,8 +48,14 @@ func (w *WorkdirCommand) ExecuteCommand(config *manifest.Schema2Config) error {
 		config.WorkingDir = filepath.Join(config.WorkingDir, resolvedWorkingDir)
 	}
 	logrus.Infof("Changed working directory to %s", config.WorkingDir)
-	w.snapshotFiles = []string{config.WorkingDir}
-	return os.MkdirAll(config.WorkingDir, 0755)
+
+	// Only create and snapshot the dir if it didn't exist already
+	if _, err := os.Stat(config.WorkingDir); os.IsNotExist(err) {
+		logrus.Infof("Creating directory %s", config.WorkingDir)
+		w.snapshotFiles = []string{config.WorkingDir}
+		return os.MkdirAll(config.WorkingDir, 0755)
+	}
+	return nil
 }
 
 // FilesToSnapshot returns the workingdir, which should have been created if it didn't already exist
@@ -52,7 +63,11 @@ func (w *WorkdirCommand) FilesToSnapshot() []string {
 	return w.snapshotFiles
 }
 
-// CreatedBy returns some information about the command for the image config history
-func (w *WorkdirCommand) CreatedBy() string {
-	return w.cmd.Name() + " " + w.cmd.Path
+// String returns some information about the command for the image config history
+func (w *WorkdirCommand) String() string {
+	return w.cmd.String()
+}
+
+func (w *WorkdirCommand) MetadataOnly() bool {
+	return false
 }

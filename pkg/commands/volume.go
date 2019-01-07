@@ -17,23 +17,27 @@ limitations under the License.
 package commands
 
 import (
-	"github.com/GoogleCloudPlatform/kaniko/pkg/util"
-	"github.com/containers/image/manifest"
-	"github.com/docker/docker/builder/dockerfile/instructions"
-	"github.com/sirupsen/logrus"
+	"fmt"
 	"os"
-	"strings"
+
+	"github.com/GoogleContainerTools/kaniko/pkg/dockerfile"
+
+	"github.com/GoogleContainerTools/kaniko/pkg/util"
+	"github.com/google/go-containerregistry/pkg/v1"
+	"github.com/moby/buildkit/frontend/dockerfile/instructions"
+	"github.com/sirupsen/logrus"
 )
 
 type VolumeCommand struct {
-	cmd           *instructions.VolumeCommand
-	snapshotFiles []string
+	BaseCommand
+	cmd *instructions.VolumeCommand
 }
 
-func (v *VolumeCommand) ExecuteCommand(config *manifest.Schema2Config) error {
+func (v *VolumeCommand) ExecuteCommand(config *v1.Config, buildArgs *dockerfile.BuildArgs) error {
 	logrus.Info("cmd: VOLUME")
 	volumes := v.cmd.Volumes
-	resolvedVolumes, err := util.ResolveEnvironmentReplacementList(volumes, config.Env, true)
+	replacementEnvs := buildArgs.ReplacementEnvs(config.Env)
+	resolvedVolumes, err := util.ResolveEnvironmentReplacementList(volumes, replacementEnvs, true)
 	if err != nil {
 		return err
 	}
@@ -44,18 +48,18 @@ func (v *VolumeCommand) ExecuteCommand(config *manifest.Schema2Config) error {
 	for _, volume := range resolvedVolumes {
 		var x struct{}
 		existingVolumes[volume] = x
-		err := util.AddPathToVolumeWhitelist(volume)
+		err := util.AddVolumePathToWhitelist(volume)
 		if err != nil {
 			return err
 		}
 
-		logrus.Infof("Creating directory %s", volume)
-		if err := os.MkdirAll(volume, 0755); err != nil {
-			return err
+		// Only create and snapshot the dir if it didn't exist already
+		if _, err := os.Stat(volume); os.IsNotExist(err) {
+			logrus.Infof("Creating directory %s", volume)
+			if err := os.MkdirAll(volume, 0755); err != nil {
+				return fmt.Errorf("Could not create directory for volume %s: %s", volume, err)
+			}
 		}
-
-		//Check if directory already exists?
-		v.snapshotFiles = append(v.snapshotFiles, volume)
 	}
 	config.Volumes = existingVolumes
 
@@ -63,9 +67,9 @@ func (v *VolumeCommand) ExecuteCommand(config *manifest.Schema2Config) error {
 }
 
 func (v *VolumeCommand) FilesToSnapshot() []string {
-	return v.snapshotFiles
+	return []string{}
 }
 
-func (v *VolumeCommand) CreatedBy() string {
-	return strings.Join(append([]string{v.cmd.Name()}, v.cmd.Volumes...), " ")
+func (v *VolumeCommand) String() string {
+	return v.cmd.String()
 }

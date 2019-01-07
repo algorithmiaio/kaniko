@@ -17,15 +17,18 @@ limitations under the License.
 package commands
 
 import (
-	"github.com/GoogleCloudPlatform/kaniko/testutil"
-	"github.com/containers/image/manifest"
-	"github.com/docker/docker/builder/dockerfile/instructions"
 	"testing"
+
+	"github.com/GoogleContainerTools/kaniko/pkg/dockerfile"
+
+	"github.com/GoogleContainerTools/kaniko/testutil"
+	"github.com/google/go-containerregistry/pkg/v1"
+	"github.com/moby/buildkit/frontend/dockerfile/instructions"
 )
 
 func TestUpdateExposedPorts(t *testing.T) {
-	cfg := &manifest.Schema2Config{
-		ExposedPorts: manifest.Schema2PortSet{
+	cfg := &v1.Config{
+		ExposedPorts: map[string]struct{}{
 			"8080/tcp": {},
 		},
 		Env: []string{
@@ -45,12 +48,12 @@ func TestUpdateExposedPorts(t *testing.T) {
 	}
 
 	exposeCmd := &ExposeCommand{
-		&instructions.ExposeCommand{
+		cmd: &instructions.ExposeCommand{
 			Ports: ports,
 		},
 	}
 
-	expectedPorts := manifest.Schema2PortSet{
+	expectedPorts := map[string]struct{}{
 		"8080/tcp": {},
 		"8081/tcp": {},
 		"8082/tcp": {},
@@ -59,14 +62,14 @@ func TestUpdateExposedPorts(t *testing.T) {
 		"8085/tcp": {},
 		"8085/udp": {},
 	}
-
-	err := exposeCmd.ExecuteCommand(cfg)
+	buildArgs := dockerfile.NewBuildArgs([]string{})
+	err := exposeCmd.ExecuteCommand(cfg, buildArgs)
 	testutil.CheckErrorAndDeepEqual(t, false, err, expectedPorts, cfg.ExposedPorts)
 }
 
 func TestInvalidProtocol(t *testing.T) {
-	cfg := &manifest.Schema2Config{
-		ExposedPorts: manifest.Schema2PortSet{},
+	cfg := &v1.Config{
+		ExposedPorts: map[string]struct{}{},
 	}
 
 	ports := []string{
@@ -74,11 +77,11 @@ func TestInvalidProtocol(t *testing.T) {
 	}
 
 	exposeCmd := &ExposeCommand{
-		&instructions.ExposeCommand{
+		cmd: &instructions.ExposeCommand{
 			Ports: ports,
 		},
 	}
-
-	err := exposeCmd.ExecuteCommand(cfg)
+	buildArgs := dockerfile.NewBuildArgs([]string{})
+	err := exposeCmd.ExecuteCommand(cfg, buildArgs)
 	testutil.CheckErrorAndDeepEqual(t, true, err, nil, nil)
 }

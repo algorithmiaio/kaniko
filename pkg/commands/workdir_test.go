@@ -16,10 +16,13 @@ limitations under the License.
 package commands
 
 import (
-	"github.com/GoogleCloudPlatform/kaniko/testutil"
-	"github.com/containers/image/manifest"
-	"github.com/docker/docker/builder/dockerfile/instructions"
 	"testing"
+
+	"github.com/GoogleContainerTools/kaniko/pkg/dockerfile"
+
+	"github.com/GoogleContainerTools/kaniko/testutil"
+	"github.com/google/go-containerregistry/pkg/v1"
+	"github.com/moby/buildkit/frontend/dockerfile/instructions"
 )
 
 // Each test here changes the same WorkingDir field in the config
@@ -62,7 +65,7 @@ var workdirTests = []struct {
 
 func TestWorkdirCommand(t *testing.T) {
 
-	cfg := &manifest.Schema2Config{
+	cfg := &v1.Config{
 		WorkingDir: "/",
 		Env: []string{
 			"path=usr/",
@@ -77,7 +80,8 @@ func TestWorkdirCommand(t *testing.T) {
 			},
 			snapshotFiles: []string{},
 		}
-		cmd.ExecuteCommand(cfg)
+		buildArgs := dockerfile.NewBuildArgs([]string{})
+		cmd.ExecuteCommand(cfg, buildArgs)
 		testutil.CheckErrorAndDeepEqual(t, false, nil, test.expectedPath, cfg.WorkingDir)
 	}
 }
