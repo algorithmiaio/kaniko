@@ -361,6 +361,7 @@ func GetUserFromUsername(userStr string, groupStr string) (string, string, error
 			}
 			gid = group.Gid
 		}
+		gid = groupStr
 	}
 
 	return uid, gid, nil
