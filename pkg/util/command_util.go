@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/GoogleContainerTools/kaniko/pkg/constants"
@@ -334,40 +335,32 @@ func GetUIDGidFromUserString(commandUserStr string, replacementEnvs []string) (s
 }
 
 func GetUserFromUsername(userStr string, groupStr string) (string, string, error) {
-	// Lookup by username
-	userObj, err := user.Lookup(userStr)
+	// Default to userStr if it is a numeric value like "1000"
+	uid := userStr
+	// Check to see if userStr is numeric ID
+	_, err := strconv.ParseUint(userStr, 10, 32)
 	if err != nil {
-		if _, ok := err.(user.UnknownUserError); ok {
-			// Lookup by id
-			userObj, err = user.LookupId(userStr)
-			if err != nil {
-				return "", "", err
-			}
-		} else {
+		// Was not numeric, try lookup by username
+		userObj, err := user.Lookup(userStr)
+		if err != nil {
+			logrus.Errorf("User string cannot be found and is not numeric %s", userStr)
 			return "", "", err
 		}
+		uid = userObj.Uid
 	}
 
 	// Same dance with groups
-	var group *user.Group
+	gid := groupStr
 	if groupStr != "" {
-		group, err = user.LookupGroup(groupStr)
+		_, err := strconv.ParseUint(groupStr, 10, 32)
 		if err != nil {
-			if _, ok := err.(user.UnknownGroupError); ok {
-				group, err = user.LookupGroupId(groupStr)
-				if err != nil {
-					return "", "", err
-				}
-			} else {
+			// Was not numeric, try lookup by group name
+			group, err := user.LookupGroup(groupStr)
+			if err != nil {
 				return "", "", err
 			}
+			gid = group.Gid
 		}
-	}
-
-	uid := userObj.Uid
-	gid := ""
-	if group != nil {
-		gid = group.Gid
 	}
 
 	return uid, gid, nil
