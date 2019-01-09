@@ -38,6 +38,17 @@ type CopyCommand struct {
 	snapshotFiles []string
 }
 
+func (c *CopyCommand) RequiresUnpackedFS() bool {
+	// We want to unpack the root filesystem for copy commands since otherwise
+	// when copying files we may think that the parent directory of the file/dir
+	// being copied doesn't exist, and will then create it with incorrect
+	// permissions based on the file/dir being copied
+	// For example copying a file to /home/username/foo would result in creating
+	// the /home directory with the same permissions as the file foo
+	// and if the file is not world-readable then neither will the /home directory
+    return true
+}
+
 func (c *CopyCommand) ExecuteCommand(config *v1.Config, buildArgs *dockerfile.BuildArgs) error {
 	// Resolve from
 	if c.cmd.From != "" {
