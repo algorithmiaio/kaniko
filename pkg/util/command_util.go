@@ -350,7 +350,7 @@ func GetUserFromUsername(userStr string, groupStr string) (string, string, error
 	}
 
 	// Same dance with groups
-	gid := ""
+	gid := groupStr
 	if groupStr != "" {
 		_, err := strconv.ParseUint(groupStr, 10, 32)
 		if err != nil {
@@ -361,7 +361,6 @@ func GetUserFromUsername(userStr string, groupStr string) (string, string, error
 			}
 			gid = group.Gid
 		}
-		gid = groupStr
 	}
 
 	return uid, gid, nil
