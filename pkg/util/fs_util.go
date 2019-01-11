@@ -507,8 +507,17 @@ func CopyDir(src, dest, buildcontext string, chownUID, chownGid int) ([]string, 
 		if fi.IsDir() {
 			logrus.Debugf("Creating directory %s", destPath)
 
-			if err := os.MkdirAll(destPath, fi.Mode()); err != nil {
+			// Make any parent directories with 0755 permissions
+			if err := os.MkdirAll(dest, 0755); err != nil {
+				logrus.Infof("error while creating parent directory %s", dest)
 				return nil, err
+			}
+			if !FilepathExists(destPath) {
+				// Make the current directory that is being copied
+				if err := os.Mkdir(destPath, fi.Mode()); err != nil {
+					logrus.Infof("error while creating real directory %s", destPath)
+					return nil, err
+				}
 			}
 			if err := os.Chown(destPath, int(uid), int(gid)); err != nil {
 				return nil, err
